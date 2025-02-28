@@ -1,0 +1,413 @@
+import * as anchor from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
+import { StatefiProtocol } from "../target/types/statefi_protocol";
+import {
+  TOKEN_PROGRAM_ID,
+  createMint,
+  createAssociatedTokenAccount,
+  mintTo,
+  getAssociatedTokenAddress,
+  getAccount,
+  createMintToInstruction,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import { expect } from "chai";
+
+
+describe("statefi-protocol", () => {
+  // Configure the client to use the local cluster.
+  const provider = anchor.AnchorProvider.env();
+  anchor.setProvider(provider);
+
+  const program = anchor.workspace.StatefiProtocol as Program<StatefiProtocol>;
+
+   // Common accounts and variables
+   const payer = anchor.web3.Keypair.generate();
+   const user = anchor.web3.Keypair.generate();
+   const admin = anchor.web3.Keypair.generate();
+   const onRampService = anchor.web3.Keypair.generate();
+   const offRampService = anchor.web3.Keypair.generate();
+   
+   let tokenMint: anchor.web3.PublicKey;
+   let userTokenAccount: anchor.web3.PublicKey;
+   let treasuryTokenAccount: anchor.web3.PublicKey;
+   let vaultTokenAccount: anchor.web3.PublicKey;
+
+   let protocolConfigPDA: anchor.web3.PublicKey;
+   let protocolConfigBump: number;
+   let userProfilePDA: anchor.web3.PublicKey;
+   let userProfileBump: number;
+   let vaultPDA: anchor.web3.PublicKey;
+   let vaultBump: number;
+   let tokenWhitelistPDA: anchor.web3.PublicKey;
+   
+   
+   before(async () => {
+    console.log("Setting up test environment...");
+    // Airdrop SOL to payer
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(payer.publicKey, 100 * anchor.web3.LAMPORTS_PER_SOL)
+    );
+    
+    // Transfer SOL to other accounts
+    const transferTx = new anchor.web3.Transaction();
+    [user, admin, onRampService, offRampService].forEach(account => {
+      transferTx.add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: account.publicKey,
+          lamports: 10 * anchor.web3.LAMPORTS_PER_SOL,
+        })
+      );
+    });
+    await provider.sendAndConfirm(transferTx, [payer]);
+  
+    // Create token mint
+  tokenMint = await createMint(
+    provider.connection,
+    payer, // payer
+    admin.publicKey, // mint authority
+    null, // freeze authority
+    9 // decimals
+  );
+      
+    // Find PDAs
+    [protocolConfigPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("protocol_config")],
+      program.programId
+    );
+  
+    [userProfilePDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("user_profile"), user.publicKey.toBuffer()],
+      program.programId
+    );
+  
+    [vaultPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), user.publicKey.toBuffer()],
+      program.programId
+    );
+  
+    [tokenWhitelistPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("token_whitelist"), tokenMint.toBuffer()],
+      program.programId
+    );
+  
+  
+   // Create token accounts with proper authorities
+  const [treasuryAuthority] = anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("treasury")],
+    program.programId
+  );
+
+  const [vaultAuthority] = anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("vault"), user.publicKey.toBuffer()],
+    program.programId
+  );
+
+  // Get ATAs
+  userTokenAccount = await getAssociatedTokenAddress(tokenMint, user.publicKey);
+  treasuryTokenAccount = await getAssociatedTokenAddress(tokenMint, treasuryAuthority, true);
+  vaultTokenAccount = await getAssociatedTokenAddress(tokenMint, vaultAuthority, true);
+
+  // Create user ATA
+  await createAssociatedTokenAccount(
+    provider.connection,
+    payer,
+    tokenMint,
+    user.publicKey
+  ).catch(() => console.log("User ATA might already exist"));
+
+  
+   // Create admin ATA
+  await createAssociatedTokenAccount(
+    provider.connection,
+    payer,
+    tokenMint,
+    admin.publicKey
+  ).catch(() => console.log("Admin ATA might already exist"));
+
+  // Create treasury ATA
+  try {
+    const treasuryAta = await createAssociatedTokenAccount(
+      provider.connection,
+      payer,
+      tokenMint,
+      treasuryAuthority,
+    );
+  } catch (e) {
+    console.log("Treasury ATA might already exist");
+  }
+
+  // Create vault ATA
+  try {
+    const vaultAta = await createAssociatedTokenAccount(
+      provider.connection,
+      payer,
+      tokenMint,
+      vaultAuthority,
+    );
+  } catch (e) {
+    console.log("Vault ATA might already exist");
+  }
+
+  // Mint initial tokens to treasury
+  try {
+    // Create the mint instruction
+    const mintIx = createMintToInstruction(
+      tokenMint,            // mint
+      treasuryTokenAccount, // destination
+      admin.publicKey,      // authority
+      1_000_000_000        // amount
+    );
+
+    // Create and send transaction with proper signers
+    const tx = new anchor.web3.Transaction().add(mintIx);
+    const latestBlockhash = await provider.connection.getLatestBlockhash();
+    tx.recentBlockhash = latestBlockhash.blockhash;
+    tx.feePayer = payer.publicKey;
+    
+    // Sign with both payer (for fee) and admin (mint authority)
+    tx.sign(payer, admin);
+    
+    const txId = await provider.connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed'
+    });
+    
+    await provider.connection.confirmTransaction({
+      signature: txId,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+    });
+
+    console.log("Successfully minted tokens to treasury");
+   } catch (e) {
+    console.error("Error minting tokens:", e);
+    throw e;
+   }
+   });
+
+  describe("Protocol Initialization", () => {
+    it("Initializes the protocol successfully", async () => {
+      console.log("Testing protocol initialization...");
+
+    await program.methods
+      .initializeProtocol(1000)
+      .accounts({
+        admin: admin.publicKey,
+        protocolConfig: protocolConfigPDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([admin])
+      .rpc();
+    
+    const config = await program.account.protocolConfig.fetch(protocolConfigPDA);
+    console.log("Protocol initialized with admin fee:", config.adminFeeBasisPoints);
+    expect(config.admin.toString()).to.equal(admin.publicKey.toString());
+    expect(config.adminFeeBasisPoints).to.equal(1000);
+
+    console.log("Protocol initialized successfully");
+  });
+
+   it("Creates a user profile", async () => {
+    console.log("Creating user profile...");
+    await program.methods
+      .createUserProfile("Test User", "test@example.com")
+      .accounts({
+        user: user.publicKey,
+        userProfile: userProfilePDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+    
+    const userProfile = await program.account.userProfile.fetch(userProfilePDA);
+    expect(userProfile.owner.toString()).to.equal(user.publicKey.toString());
+  });
+   
+  it("Creates a vault", async () => {
+    console.log("Creating vault...");
+    await program.methods
+      .createVault()
+      .accounts({
+        user: user.publicKey,
+        userProfile: userProfilePDA,
+        vault: vaultPDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+    
+    const vault = await program.account.vault.fetch(vaultPDA);
+    expect(vault.owner.toString()).to.equal(user.publicKey.toString());
+  });
+
+  describe("Fiat to SPL Token Flow", () => {
+  let fiatDepositPDA: anchor.web3.PublicKey;
+  let fiatDepositBump: number;
+  
+  it("Creates a fiat deposit", async () => {
+    console.log("Creating fist deposits...");
+    // Find PDA for fiat deposit
+    [fiatDepositPDA, fiatDepositBump] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("fiat_deposit"),
+        user.publicKey.toBuffer(),
+        Buffer.from(new Uint8Array(new anchor.BN(0).toArray("le", 8))),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initiateFiatDeposit(
+        new anchor.BN(100_000), // $100.00
+        "REF123456789"
+      )
+      .accounts({
+        user: user.publicKey,
+        userProfile: userProfilePDA,
+        tokenWhitelist: tokenWhitelistPDA,
+        mint: tokenMint,
+        fiatDeposit: fiatDepositPDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+
+    const fiatDeposit = await program.account.fiatDeposit.fetch(fiatDepositPDA);
+    expect(fiatDeposit.user.toString()).to.equal(user.publicKey.toString());
+    expect(fiatDeposit.amount.toNumber()).to.equal(100_000);
+    expect(fiatDeposit.referenceId).to.equal("REF123456789");
+    expect(fiatDeposit.status.pending).to.be.true;
+  });
+
+  it("Completes a fiat deposit", async () => {
+    console.log("Completing fiat deposits...");
+    const [vaultAuthority] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), user.publicKey.toBuffer()],
+      program.programId
+    );
+
+    vaultTokenAccount = await getAssociatedTokenAddress(
+      tokenMint,
+      vaultAuthority,
+      true
+    );
+
+    await program.methods
+      .completeFiatDeposit()
+      .accounts({
+        admin: admin.publicKey,
+        protocolConfig: protocolConfigPDA,
+        fiatDeposit: fiatDepositPDA,
+        vault: vaultPDA,
+        vaultTokenAccount: vaultTokenAccount,
+        treasuryTokenAccount: treasuryTokenAccount,
+        adminTokenAccount: await getAssociatedTokenAddress(tokenMint, admin.publicKey),
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([admin])
+      .rpc();
+
+    const fiatDeposit = await program.account.fiatDeposit.fetch(fiatDepositPDA);
+    expect(fiatDeposit.status.completed).to.be.true;
+
+    const vaultBalance = await getAccount(provider.connection, vaultTokenAccount);
+    expect(vaultBalance.amount.toString()).to.equal("100000000");
+  });
+
+  describe("SPL Token to Fiat Flow", () => {
+    let fiatWithdrawalPDA: anchor.web3.PublicKey;
+    
+    it("Creates a fiat withdrawal", async () => {
+      console.log("Creating fiat withdrawal...");
+      [fiatWithdrawalPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("fiat_withdrawal"),
+          user.publicKey.toBuffer(),
+          Buffer.from(new Uint8Array(new anchor.BN(0).toArray("le", 8))),
+        ],
+        program.programId
+      );
+
+      await program.methods
+        .initiateFiatWithdrawal(
+          new anchor.BN(50_000_000),
+          "REF123456789"
+        )
+        .accounts({
+          user: user.publicKey,
+          userProfile: userProfilePDA,
+          vault: vaultPDA,
+          tokenWhitelist: tokenWhitelistPDA, 
+          mint: tokenMint,
+          vaultTokenAccount: vaultTokenAccount,
+          treasuryTokenAccount: treasuryTokenAccount,
+          fiatWithdrawal: fiatWithdrawalPDA,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
+
+      const withdrawal = await program.account.fiatWithdrawal.fetch(fiatWithdrawalPDA);
+      expect(withdrawal.user.toString()).to.equal(user.publicKey.toString());
+      expect(withdrawal.amount.toString()).to.equal("50000000");
+      expect(withdrawal.status.pending).to.be.true;
+    });
+
+    it("Completes a fiat withdrawal", async () => {
+      console.log("Completing fiat withdrawal...");
+      await program.methods
+        .completeFiatWithdrawal()
+        .accounts({
+          admin: admin.publicKey,
+          protocolConfig: protocolConfigPDA,
+          fiatWithdrawal: fiatWithdrawalPDA,
+        })
+        .signers([admin])
+        .rpc();
+
+      const withdrawal = await program.account.fiatWithdrawal.fetch(fiatWithdrawalPDA);
+      expect(withdrawal.status.completed).to.be.true;
+    });
+  });
+
+  describe("Error Handling", () => {
+    it("Rejects invalid amounts", async () => {
+      try {
+        const [newFiatDepositPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("fiat_deposit"),
+            user.publicKey.toBuffer(),
+            Buffer.from(new Uint8Array(new anchor.BN(1).toArray("le", 8))),
+          ],
+          program.programId
+        );
+
+        await program.methods
+          .initiateFiatDeposit(
+            new anchor.BN(0),
+            "REF123456789"
+          )
+          .accounts({
+            user: user.publicKey,
+            userProfile: userProfilePDA,
+            tokenWhitelist: tokenWhitelistPDA,
+            mint: tokenMint,
+            fiatDeposit: newFiatDepositPDA,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .signers([user])
+          .rpc();
+
+        expect.fail("Expected error but transaction succeeded");
+      } catch (err) {
+        expect(err.toString()).to.include("InvalidAmount");
+      }
+    });
+  });
+  });
+});
+
+});
