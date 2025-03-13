@@ -51,35 +51,6 @@ Users can convert their SPL tokens back to fiat currency:
 - Admin fee system with configurable rates
 - Secure vaults for asset management
 
-## Getting Started
-
-### Prerequisites
-
-- [Rust](https://www.rust-lang.org/tools/install)
-- [Solana](https://docs.solanalabs.com/cli/install)
-- [Anchor](https://www.anchor-lang.com/docs/installation)
-- [Node.js](https://nodejs.org/) (for front-end integration)
-
-### Installation
-
-1. Clone the repository
-```bash
-git clone https://github.com/francis-codex/statefi-protocol.git
-cd statefi-protocol
-```
-
-2. Build the program
-```bash
-anchor build
-```
-
-3. Deploy to a Solana cluster
-```bash
-anchor deploy
-```
-
-## Usage
-
 ### Creating a User Profile
 
 ```typescript
