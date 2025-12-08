@@ -1,24 +1,17 @@
-import * as anchor from "@project-serum/anchor";
-import { Program } from "@project-serum/anchor";
+import * as anchor from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
 import { StatefiProtocol } from "../target/types/statefi_protocol";
 import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, createMint, createAccount } from "@solana/spl-token";
-import { expect, assert } from "chai";
-import { AnchorError } from "@project-serum/anchor";
+import { expect } from "chai";
 
 describe("statefi-protocol", () => {
   // Configure the client to use the local cluster
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  // Import the program ID from the IDL
-  const PROGRAM_ID = new PublicKey("8pwyvcK1a2MkNnd2M63ec1cz8GH7sKgpVcrMuYCPVYsb");
-  
-  const program = new anchor.Program(
-    require("../target/idl/statefi_protocol.json"),
-    PROGRAM_ID,
-    provider
-  ) as Program<StatefiProtocol>;
+  // Use workspace to get the program (recommended for Anchor 0.31+)
+  const program = anchor.workspace.StatefiProtocol as Program<StatefiProtocol>;
 
 // Test accounts
 const admin = Keypair.generate();
@@ -72,7 +65,7 @@ before(async () => {
 
 it("Initialize protocol", async () => {
   // Derive PDA for protocol config
-  [protocolConfig] = await PublicKey.findProgramAddressSync(
+  [protocolConfig] = PublicKey.findProgramAddressSync(
     [Buffer.from("protocol_config")],
     program.programId
   );
@@ -93,7 +86,7 @@ it("Initialize protocol", async () => {
 });
 
 it("Create user profile", async () => {
-  [userProfile] = await PublicKey.findProgramAddressSync(
+  [userProfile] = PublicKey.findProgramAddressSync(
     [Buffer.from("user_profile"), user.publicKey.toBuffer()],
     program.programId
   );
@@ -118,7 +111,7 @@ it("Create user profile", async () => {
 });
 
 it("Create vault", async () => {
-  [vault] = await PublicKey.findProgramAddress(
+  [vault] = PublicKey.findProgramAddressSync(
     [Buffer.from("vault"), user.publicKey.toBuffer()],
     program.programId
   );
@@ -139,7 +132,7 @@ it("Create vault", async () => {
 });
 
 it("Whitelist token", async () => {
-  [tokenWhitelist] = await PublicKey.findProgramAddress(
+  [tokenWhitelist] = PublicKey.findProgramAddressSync(
     [Buffer.from("token_whitelist"), mint.toBuffer()],
     program.programId
   );
@@ -166,7 +159,7 @@ it("Initiate and complete fiat deposit", async () => {
   const amount = new anchor.BN(1000000); // 1 USDC
   const referenceId = "TEST-DEP-001";
 
-  const [fiatDeposit] = await PublicKey.findProgramAddress(
+  const [fiatDeposit] = PublicKey.findProgramAddressSync(
     [
       Buffer.from("fiat_deposit"),
       user.publicKey.toBuffer(),
